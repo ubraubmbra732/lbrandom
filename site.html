@@ -1,0 +1,178 @@
+  <!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Random Letterboxd Picker</title>
+<style>
+  body{font-family:sans-serif;background:#f5f5f5;margin:0;padding:20px;text-align:center;}
+  h1{margin-top:0;}
+  input,button{padding:10px;font-size:14px;border-radius:5px;border:1px solid #ccc;margin:5px;}
+  button{cursor:pointer;background:#333;color:#fff;border:none;}
+  #status{margin-top:10px;color:#555;}
+  #stack{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin-top:20px;}
+  .poster{width:120px;height:180px;background-size:cover;background-position:center;border-radius:6px;box-shadow:0 4px 10px rgba(0,0,0,0.2);}
+  .label{font-size:12px;margin-top:4px;text-align:center;max-width:120px;}
+  #spinArea{margin-top:30px;height:250px;display:flex;justify-content:center;align-items:center;}
+  #spinPoster{width:160px;height:240px;background-size:cover;background-position:center;border-radius:8px;box-shadow:0 6px 15px rgba(0,0,0,0.3);}
+  #result{margin-top:20px;font-size:18px;}
+</style>
+</head>
+<body>
+
+<h1>Random Letterboxd Picker</h1>
+<p>Вставь ссылку на лист Letterboxd или никнейм для watchlist:</p>
+<input id="urlInput" placeholder="https://letterboxd.com/user/list/... или никнейм" size="50">
+<button id="loadBtn">Загрузить</button>
+<button id="spinBtn" disabled>🎬 Выбрать случайный</button>
+
+<div id="status"></div>
+<div id="stack"></div>
+
+<div id="spinArea">
+  <div id="spinPoster"></div>
+</div>
+
+<div id="result"></div>
+
+<script>
+// === ВСТАВЬ СЮДА СВОЙ URL Cloudflare Workers-прокси ===
+const proxyBase = 'https://workers-playground-bold-bar-dde9.vasiliy-s00985.workers.dev/';
+
+const urlInput = document.getElementById('urlInput');
+const loadBtn = document.getElementById('loadBtn');
+const spinBtn = document.getElementById('spinBtn');
+const statusDiv = document.getElementById('status');
+const stackDiv = document.getElementById('stack');
+const spinPoster = document.getElementById('spinPoster');
+const resultDiv = document.getElementById('result');
+
+let films = [];
+let spinInterval = null;
+
+function setStatus(msg){ statusDiv.textContent = msg; }
+
+async function fetchHtmlThroughProxy(url){
+  try{
+    setStatus('Загружаю страницу...');
+    const res = await fetch(proxyBase + encodeURIComponent(url));
+    if(!res.ok) throw new Error('Ошибка сети: ' + res.status);
+    const text = await res.text();
+    setStatus('Страница загружена');
+    return text;
+  }catch(e){
+    setStatus('Ошибка: ' + e.message);
+    throw e;
+  }
+}
+
+function parseListHtml(html, baseUrl = 'https://letterboxd.com'){
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const anchors = Array.from(doc.querySelectorAll('a[href^="/film/"]'));
+  const seen = new Set();
+  const list = [];
+
+  anchors.forEach(a=>{
+    const img = a.querySelector('img');
+    if(!img) return;
+    let poster = img.getAttribute('src') || img.getAttribute('data-src');
+    if(poster.startsWith('//')) poster = 'https:' + poster;
+    let title = img.alt || a.textContent.trim();
+    let link = baseUrl + a.getAttribute('href');
+    const key = poster + title;
+    if(!seen.has(key)){
+      seen.add(key);
+      list.push({title, poster, link});
+    }
+  });
+  return list;
+}
+
+function renderStack(){
+  stackDiv.innerHTML = '';
+  films.forEach(f=>{
+    const div = document.createElement('div');
+    div.style.display = 'flex';
+    div.style.flexDirection = 'column';
+    div.style.alignItems = 'center';
+    const poster = document.createElement('div');
+    poster.className = 'poster';
+    poster.style.backgroundImage = `url("${f.poster}")`;
+    const label = document.createElement('div');
+    label.className = 'label';
+    label.textContent = f.title;
+    div.appendChild(poster);
+    div.appendChild(label);
+    stackDiv.appendChild(div);
+  });
+}
+
+function startSpin(){
+  if(films.length === 0) return;
+  let index = 0;
+  let spins = 0;
+  spinBtn.disabled = true;
+  resultDiv.innerHTML = '';
+
+  spinInterval = setInterval(()=>{
+    const film = films[index];
+    spinPoster.style.backgroundImage = `url("${film.poster}")`;
+    index = (index + 1) % films.length;
+    spins++;
+
+    if(spins > 20 && Math.random() < 0.05){
+      clearInterval(spinInterval);
+      stopSpin(index);
+    }
+  }, 50);
+}
+
+function stopSpin(finalIndex){
+  let delay = 100;
+  let count = 0;
+  const slowTimer = setInterval(()=>{
+    const film = films[finalIndex % films.length];
+    spinPoster.style.backgroundImage = `url("${film.poster}")`;
+    finalIndex++;
+    count++;
+    delay += 50;
+    if(delay > 500){
+      clearInterval(slowTimer);
+      const chosen = films[(finalIndex-1) % films.length];
+      resultDiv.innerHTML = `<h3>🎯 Выбран фильм:</h3>
+        <a href="${chosen.link}" target="_blank" style="text-decoration:none;color:#000;">
+          <img src="${chosen.poster}" style="width:150px;border-radius:8px"><br>
+          ${chosen.title}
+        </a>`;
+      spinBtn.disabled = false;
+    }
+  }, delay);
+}
+
+loadBtn.addEventListener('click', async ()=>{
+  let input = urlInput.value.trim();
+  if(!input){ setStatus('Введите ссылку или никнейм'); return; }
+  if(!input.startsWith('http')){
+    input = `https://letterboxd.com/${encodeURIComponent(input)}/watchlist/`;
+  }
+  try{
+    const html = await fetchHtmlThroughProxy(input);
+    films = parseListHtml(html, new URL(input).origin);
+    if(films.length === 0){
+      setStatus('Фильмы не найдены');
+      spinBtn.disabled = true;
+    } else {
+      setStatus(`Найдено фильмов: ${films.length}`);
+      renderStack();
+      spinBtn.disabled = false;
+    }
+  }catch(e){
+    console.error(e);
+  }
+});
+
+spinBtn.addEventListener('click', startSpin);
+</script>
+
+</body>
+</html>
